@@ -9,7 +9,7 @@ from sklearn.tree import DecisionTreeClassifier, plot_tree
 from sklearn.metrics import accuracy_score, confusion_matrix, roc_auc_score, roc_curve
 import matplotlib.pyplot as plt
 import seaborn as sns
-import shap
+from lime import lime_tabular
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -105,15 +105,29 @@ ax.legend()
 st.pyplot(fig)
 
 # --- Logistic Regression Explanation ---
-st.subheader("📌 Logistic Regression Explanation with SHAP")
-explainer = shap.Explainer(models["Logistic Regression"], X_train)
-shap_values = explainer(user_df)
-st.write("**Prediction:**", int(models["Logistic Regression"].predict(user_df)[0]))
-plt.figure()  # start a fresh figure
-shap.plots.waterfall(shap_values[0], show=False)
-fig2 = plt.gcf()
+st.subheader("📌 Logistic Regression Explanation with LIME")
+# Create LIME explainer
+explainer = lime_tabular.LimeTabularExplainer(
+    X_train.values,
+    feature_names=X_train.columns,
+    class_names=['No Diabetes', 'Diabetes'],
+    mode='classification'
+)
+
+# Get explanation for the user input
+exp = explainer.explain_instance(
+    user_df.values[0],
+    models["Logistic Regression"].predict_proba,
+    num_features=8
+)
+
+# Create a figure for the explanation
+fig2, ax = plt.subplots(figsize=(10, 6))
+exp.as_pyplot_figure()
 st.pyplot(fig2)
 
+# Show prediction
+st.write("**Prediction:**", int(models["Logistic Regression"].predict(user_df)[0]))
 
 # --- Decision Tree Visualization ---
 st.subheader("🌳 Decision Tree Visualization")
