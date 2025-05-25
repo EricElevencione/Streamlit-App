@@ -1,1 +1,9 @@
-streamlit==1.32.0 
+streamlit==1.32.0
+streamlit
+pandas
+numpy
+scikit-learn
+xgboost
+matplotlib
+seaborn
+shap
