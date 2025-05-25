@@ -1,147 +1,155 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.naive_bayes import GaussianNB
-from sklearn.linear_model import LogisticRegression
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.tree import DecisionTreeClassifier, plot_tree
-from sklearn.metrics import accuracy_score, confusion_matrix, roc_auc_score, roc_curve
-import matplotlib.pyplot as plt
+import pickle
+import xgboost as xgb
 import seaborn as sns
-from lime import lime_tabular
-import warnings
-warnings.filterwarnings("ignore")
+import matplotlib.pyplot as plt
 
-# Load dataset
-data = pd.read_csv("https://raw.githubusercontent.com/jbrownlee/Datasets/master/pima-indians-diabetes.data.csv",
-                   names=["Pregnancies", "Glucose", "BloodPressure", "SkinThickness",
-                          "Insulin", "BMI", "DiabetesPedigreeFunction", "Age", "Outcome"])
+# === Page config ===
+st.set_page_config(page_title="Telco Churn Prediction", layout="centered")
+st.title("📱 Telco Customer Churn Prediction")
+st.markdown("Enter customer information below to assess churn risk.")
 
-st.title("Pima Diabetes Classifier")
-st.markdown("""
-This app demonstrates core **classification algorithms** on the Pima Indians Diabetes dataset.
+# === Load serialized objects ===
+model = pickle.load(open("models/xgboost_model.pkl", "rb"))
+scaler = pickle.load(open("models/scaler.pkl", "rb"))
+encoder = pickle.load(open("models/encoder.pkl", "rb"))
+columns = pickle.load(open("models/columns.pkl", "rb"))
+metrics = pickle.load(open("models/metrics.pkl", "rb"))
 
-Compare classifiers and visualize two key models: **Logistic Regression** and **Decision Tree**.
-""")
+# === Load dataset from CSV ===
+@st.cache_data
+def load_data():
+    df = pd.read_csv("dataset/WA_Fn-UseC_-Telco-Customer-Churn.csv")
+    return df
 
-# Sidebar user input
-st.sidebar.header("Input Parameters for Prediction")
-def user_input():
-    inputs = {}
-    for col in data.columns[:-1]:
-        inputs[col] = st.sidebar.number_input(col, value=float(data[col].median()))
-    return pd.DataFrame([inputs])
+data = load_data()
 
-user_df = user_input()
+# === Data Preview (optional) ===
+with st.expander("🔍 View Sample Dataset"):
+    st.dataframe(data.head())
 
-# Split features and target
-X = data.drop("Outcome", axis=1)
-y = data["Outcome"]
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+# === Input sidebar ===
+with st.sidebar:
+    st.header("Customer Details")
 
-# --- 1. OneR Classifier ---
-def one_r(X_train, y_train, X_test):
-    best_acc = 0
-    best_feature = None
-    best_rules = {}
-    for col in X_train.columns:
-        rules = X_train[col].round().astype(int).groupby(X_train[col].round().astype(int)).agg(lambda x: y_train.loc[x.index].mode()[0])
-        preds = X_test[col].round().astype(int).map(rules).fillna(0).astype(int)
-        acc = accuracy_score(y_test, preds)
-        if acc > best_acc:
-            best_acc = acc
-            best_feature = col
-            best_rules = rules
-    final_preds = X_test[best_feature].round().astype(int).map(best_rules).fillna(0).astype(int)
-    return final_preds, best_feature, best_rules
+    gender = st.selectbox("Gender", ["Female", "Male"])
+    senior = st.selectbox("Senior Citizen", ["No", "Yes"])
+    partner = st.selectbox("Has Partner", ["No", "Yes"])
+    dependents = st.selectbox("Has Dependents", ["No", "Yes"])
+    tenure = st.slider("Tenure (months)", 0, 72, 12)
+    phone_service = st.selectbox("Phone Service", ["Yes", "No"])
+    multiple_lines = st.selectbox("Multiple Lines", ["No", "Yes", "No phone service"])
+    internet_service = st.selectbox("Internet Service", ["DSL", "Fiber optic", "No"])
+    online_security = st.selectbox("Online Security", ["Yes", "No", "No internet service"])
+    online_backup = st.selectbox("Online Backup", ["Yes", "No", "No internet service"])
+    device_protection = st.selectbox("Device Protection", ["Yes", "No", "No internet service"])
+    tech_support = st.selectbox("Tech Support", ["Yes", "No", "No internet service"])
+    streaming_tv = st.selectbox("Streaming TV", ["Yes", "No", "No internet service"])
+    streaming_movies = st.selectbox("Streaming Movies", ["Yes", "No", "No internet service"])
+    contract = st.selectbox("Contract Type", ["Month-to-month", "One year", "Two year"])
+    paperless = st.selectbox("Paperless Billing", ["Yes", "No"])
+    payment_method = st.selectbox("Payment Method", [
+        "Electronic check", "Mailed check", "Bank transfer (automatic)", "Credit card (automatic)"
+    ])
+    monthly_charges = st.number_input("Monthly Charges ($)", min_value=0.0, value=70.0)
+    total_charges = st.number_input("Total Charges ($)", min_value=0.0, value=1000.0)
 
-# --- 2. Other models ---
-models = {
-    "Naive Bayes": GaussianNB(),
-    "Logistic Regression": LogisticRegression(max_iter=1000),
-    "KNN": KNeighborsClassifier(),
-    "Decision Tree": DecisionTreeClassifier(random_state=0)
-}
+# === Predict button ===
+if st.button("Predict Churn"):
+    # === Define features according to training ===
+    num_features = ["tenure", "MonthlyCharges", "TotalCharges"]
+    cat_features = [
+        "gender", "Partner", "Dependents", "PhoneService", "MultipleLines",
+        "InternetService", "OnlineSecurity", "OnlineBackup", "DeviceProtection",
+        "TechSupport", "StreamingTV", "StreamingMovies", "Contract",
+        "PaperlessBilling", "PaymentMethod"
+    ]
 
-results = {}
+    # Construct input DataFrame
+    input_dict = {
+        "gender": gender,
+        "SeniorCitizen": 1 if senior == "Yes" else 0,  # Note this is numeric and in training
+        "Partner": partner,
+        "Dependents": dependents,
+        "tenure": tenure,
+        "PhoneService": phone_service,
+        "MultipleLines": multiple_lines,
+        "InternetService": internet_service,
+        "OnlineSecurity": online_security,
+        "OnlineBackup": online_backup,
+        "DeviceProtection": device_protection,
+        "TechSupport": tech_support,
+        "StreamingTV": streaming_tv,
+        "StreamingMovies": streaming_movies,
+        "Contract": contract,
+        "PaperlessBilling": paperless,
+        "PaymentMethod": payment_method,
+        "MonthlyCharges": monthly_charges,
+        "TotalCharges": total_charges
+    }
 
-# OneR Model
-oner_preds, best_feat, rules = one_r(X_train, y_train, X_test)
-results["OneR"] = (accuracy_score(y_test, oner_preds), confusion_matrix(y_test, oner_preds), roc_auc_score(y_test, oner_preds))
+    input_df = pd.DataFrame([input_dict])
 
-# Train other models
-for name, model in models.items():
-    model.fit(X_train, y_train)
-    preds = model.predict(X_test)
-    results[name] = (accuracy_score(y_test, preds), confusion_matrix(y_test, preds), roc_auc_score(y_test, preds))
+    # Scale numerical features
+    num_cols_with_senior = ["SeniorCitizen"] + num_features
+    num_scaled = scaler.transform(input_df[num_cols_with_senior])
 
-# Display metrics
-st.subheader("📊 Model Performance Comparison")
-# Convert Confusion Matrices to strings for display
-formatted_results = {
-    model: [acc, str(cm), roc]
-    for model, (acc, cm, roc) in results.items()
-}
-df_results = pd.DataFrame.from_dict(formatted_results, orient="index", columns=["Accuracy", "Confusion Matrix", "ROC AUC"])
-st.dataframe(df_results)
+    # Encode categorical features
+    cat_encoded = encoder.transform(input_df[cat_features])
+    cat_encoded_df = pd.DataFrame(cat_encoded, columns=encoder.get_feature_names_out(cat_features))
 
-# --- ROC Curves ---
-st.subheader("🔍 ROC Curves")
-fig, ax = plt.subplots()
-for name, model in models.items():
-    if hasattr(model, "predict_proba"):
-        probs = model.predict_proba(X_test)[:, 1]
-        fpr, tpr, _ = roc_curve(y_test, probs)
-        ax.plot(fpr, tpr, label=name)
-probs = oner_preds
-fpr, tpr, _ = roc_curve(y_test, probs)
-ax.plot(fpr, tpr, label="OneR")
-ax.plot([0, 1], [0, 1], linestyle='--')
-ax.set_title("ROC Curve")
-ax.set_xlabel("False Positive Rate")
-ax.set_ylabel("True Positive Rate")
-ax.legend()
-st.pyplot(fig)
+    # Combine scaled numerical and encoded categorical features
+    final_input = np.concatenate([num_scaled, cat_encoded_df.values], axis=1)
 
-# --- Logistic Regression Explanation ---
-st.subheader("📌 Logistic Regression Explanation with LIME")
-# Create LIME explainer
-explainer = lime_tabular.LimeTabularExplainer(
-    X_train.values,
-    feature_names=X_train.columns,
-    class_names=['No Diabetes', 'Diabetes'],
-    mode='classification'
-)
+    # Convert to DataFrame with full column names
+    final_input_df = pd.DataFrame(final_input, columns=columns)
 
-# Get explanation for the user input
-exp = explainer.explain_instance(
-    user_df.values[0],
-    models["Logistic Regression"].predict_proba,
-    num_features=8
-)
+    # Predict
+    prediction = model.predict(final_input_df)[0]
+    probability = model.predict_proba(final_input_df)[0][1]
 
-# Create a figure for the explanation
-fig2, ax = plt.subplots(figsize=(10, 6))
-exp.as_pyplot_figure()
-st.pyplot(fig2)
+    # Output prediction
+    st.subheader("Prediction Result")
+    if prediction == 1:
+        st.error(f"⚠️ The customer is **likely to churn** (Probability: {probability:.2%})")
+    else:
+        st.success(f"✅ The customer is **not likely to churn** (Probability: {probability:.2%})")
 
-# Show prediction
-st.write("**Prediction:**", int(models["Logistic Regression"].predict(user_df)[0]))
+    # Feature importance
+    with st.expander("📊 Feature Importance (Top 10)"):
+        booster = model.get_booster()
+        importance = booster.get_score(importance_type="weight")
+        importance_df = pd.DataFrame({
+            "Feature": list(importance.keys()),
+            "Importance": list(importance.values())
+        }).sort_values(by="Importance", ascending=False).head(10)
+        st.bar_chart(importance_df.set_index("Feature"))
 
-# --- Decision Tree Visualization ---
-st.subheader("🌳 Decision Tree Visualization")
-fig3, ax2 = plt.subplots(figsize=(12, 6))
-plot_tree(models["Decision Tree"], feature_names=X.columns, class_names=["No Diabetes", "Diabetes"], filled=True, ax=ax2)
-st.pyplot(fig3)
+     # Model Metrics Overview
+    with st.expander("📈 Model Performance Metrics (Test Set)"):
+        st.metric(label="ROC AUC Score", value=f"{metrics['roc_auc']:.3f}")
 
-# --- Predict using Logistic and Tree ---
-st.subheader("🤖 Prediction using Logistic & Tree")
-st.write("**Input Data:**")
-st.dataframe(user_df)
-log_pred = models["Logistic Regression"].predict(user_df)[0]
-tree_pred = models["Decision Tree"].predict(user_df)[0]
-st.success(f"Logistic Regression Prediction: {'Diabetic' if log_pred else 'Non-Diabetic'}")
-st.success(f"Decision Tree Prediction: {'Diabetic' if tree_pred else 'Non-Diabetic'}")
+        report_df = pd.DataFrame(metrics["report"]).transpose()
+        report_df.index = report_df.index.map({
+            "0": "No Churn",
+            "1": "Churn",
+            "accuracy": "Accuracy",
+            "macro avg": "Macro Avg",
+            "weighted avg": "Weighted Avg"
+        })
+        st.dataframe(report_df.style.format(precision=3).background_gradient(cmap="Blues"))
 
-st.caption("Made for Data Mining Class - Classification Module")
+    # Confusion Matrix
+    with st.expander("🧮 Confusion Matrix"):
+        cm = np.array(metrics["confusion_matrix"])
+        labels = ["No Churn", "Churn"]
+        fig, ax = plt.subplots()
+        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=labels, yticklabels=labels, ax=ax)
+        ax.set_xlabel("Predicted")
+        ax.set_ylabel("Actual")
+        st.pyplot(fig)
+
+# === Footer ===
+st.caption("Developed using Streamlit and XGBoost | Dataset: IBM Telco Churn on Kaggle")
